@@ -1,5 +1,7 @@
 #![cfg_attr(not(feature = "std"), no_std, no_main)]
 
+pub use crate::aaw::AawRef;
+
 #[ink::contract]
 mod aaw {
     use ink::prelude::{vec::Vec, string::String};
