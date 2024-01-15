@@ -25,6 +25,18 @@ mod aaw {
             }
         }
 
+        #[ink(message)]
+        pub fn get_current_votes(&self, account_id: AccountId) -> u32 {
+            // TODO missing implementation
+            self.psp34.balance_of(account_id)
+        }
+
+        #[ink(message)]
+        pub fn get_votes_at_block(&self, account_id: AccountId, _block: BlockNumber) -> u32 {
+            // TODO missing implementation
+            self.psp34.balance_of(account_id)
+        }
+
         fn emit_events(&self, events: Vec<PSP34Event>) {
             for event in events {
                 match event {
