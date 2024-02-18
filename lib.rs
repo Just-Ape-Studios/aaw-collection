@@ -4,7 +4,11 @@ pub use crate::aaw::AawRef;
 
 #[ink::contract]
 mod aaw {
-    use ink::prelude::{vec::Vec, string::String};
+    use ink::{
+        env::block_number,
+        prelude::{string::String, vec::Vec},
+        storage::Mapping,
+    };
     use psp34::{
         types::Id, PSP34Data, PSP34Enumerable, PSP34Error, PSP34Event, PSP34Metadata,
         PSP34Mintable, PSP34,
@@ -14,27 +18,75 @@ mod aaw {
     pub struct Aaw {
         psp34: PSP34Data,
         owner: AccountId,
+        checkpoints: Mapping<(AccountId, u128), Checkpoint>,
+        num_checkpoints: Mapping<AccountId, u128>,
+    }
+
+    #[derive(Debug, Clone, scale::Encode, scale::Decode)]
+    #[cfg_attr(
+        feature = "std",
+        derive(scale_info::TypeInfo, ink::storage::traits::StorageLayout)
+    )]
+    pub struct Checkpoint {
+        from_block: BlockNumber,
+        votes: u32,
     }
 
     impl Aaw {
         #[ink(constructor)]
         pub fn new() -> Self {
             Self {
-                psp34: PSP34Data::new(10_000),
+                psp34: PSP34Data::new(),
                 owner: Self::env().caller(),
+                checkpoints: Mapping::new(),
+                num_checkpoints: Mapping::new(),
             }
         }
 
         #[ink(message)]
         pub fn get_current_votes(&self, account_id: AccountId) -> u32 {
-            // TODO missing implementation
-            self.psp34.balance_of(account_id)
+            let num_checkpoints = self.num_checkpoints.get(account_id).unwrap_or(0);
+            if num_checkpoints == 0 {
+                return 0;
+            }
+
+            let last_checkpoint_idx = num_checkpoints - 1;
+            self.checkpoints
+                .get((account_id, last_checkpoint_idx))
+                .map_or(0, |c| c.votes)
         }
 
         #[ink(message)]
-        pub fn get_votes_at_block(&self, account_id: AccountId, _block: BlockNumber) -> u32 {
-            // TODO missing implementation
-            self.psp34.balance_of(account_id)
+        pub fn get_votes_at_block(&self, account_id: AccountId, block: BlockNumber) -> u32 {
+            let current_block = self.env().block_number();
+            if block > current_block {
+                return 0;
+            }
+
+            let num_checkpoints = self.num_checkpoints.get(account_id).unwrap_or(0);
+            if num_checkpoints == 0 {
+                return 0;
+            }
+
+            let mut lower = 0;
+            let mut upper = num_checkpoints - 1;
+
+            while upper > lower {
+                let center = upper - (upper - lower) / 2;
+                // TODO handle error
+                let cp = self.checkpoints.get((account_id, center)).unwrap();
+
+                if cp.from_block == block {
+                    return cp.votes;
+                } else if cp.from_block < block {
+                    lower = center;
+                } else {
+                    upper = center - 1;
+                }
+            }
+
+            // TODO handle error
+            return self.checkpoints.get((account_id, lower)).unwrap().votes;
         }
 
         fn emit_events(&self, events: Vec<PSP34Event>) {
@@ -144,11 +196,6 @@ mod aaw {
         #[ink(message)]
         fn total_supply(&self) -> Balance {
             self.psp34.total_supply()
-        }
-
-        #[ink(message)]
-        fn max_supply(&self) -> Balance {
-            self.psp34.max_supply()
         }
     }
 
