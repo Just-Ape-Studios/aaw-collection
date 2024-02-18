@@ -202,15 +202,7 @@ mod aaw {
     impl PSP34Mintable for Aaw {
         #[ink(message)]
         fn mint(&mut self, account: AccountId) -> Result<(), PSP34Error> {
-            if self.env().caller() != self.owner {
-                return Err(PSP34Error::Custom(String::from(
-                    "this message is only callable by the owner of the contract",
-                )));
-            }
-
-            let events = self.psp34.mint(account)?;
-            self.emit_events(events);
-            Ok(())
+            self.mint_with_attributes(account, vec![])
         }
 
         #[ink(message)]
@@ -219,6 +211,8 @@ mod aaw {
             account: AccountId,
             attributes: Vec<(Vec<u8>, Vec<u8>)>,
         ) -> Result<(), PSP34Error> {
+            let block = self.env().block_number();
+
             if self.env().caller() != self.owner {
                 return Err(PSP34Error::Custom(String::from(
                     "this message is only callable by the owner of the contract",
@@ -226,6 +220,41 @@ mod aaw {
             }
 
             let events = self.psp34.mint_with_attributes(account, attributes)?;
+
+            let num_of_checkpoints = self.num_checkpoints.get(account).unwrap_or(0);
+            if num_of_checkpoints == 0 {
+                self.checkpoints.insert(
+                    (account, 0),
+                    &Checkpoint {
+                        from_block: block,
+                        votes: 1,
+                    },
+                );
+
+                self.num_checkpoints.insert(account, &1);
+            } else {
+                let last_checkpoint_idx = num_of_checkpoints - 1;
+
+                // TODO handle error
+                let last_checkpoint = self
+                    .checkpoints
+                    .get((account, last_checkpoint_idx))
+                    .unwrap();
+
+                let next_cp_votes = last_checkpoint.votes + 1;
+
+                self.checkpoints.insert(
+                    (account, num_of_checkpoints),
+                    &Checkpoint {
+                        from_block: block,
+                        votes: next_cp_votes,
+                    },
+                );
+
+                self.num_checkpoints
+                    .insert(account, &(num_of_checkpoints + 1));
+            }
+
             self.emit_events(events);
             Ok(())
         }
