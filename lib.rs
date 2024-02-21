@@ -1,14 +1,13 @@
 #![cfg_attr(not(feature = "std"), no_std, no_main)]
 
+mod checkpoint;
+
 pub use crate::aaw::AawRef;
 
 #[ink::contract]
 mod aaw {
-    use ink::{
-        env::block_number,
-        prelude::{string::String, vec::Vec},
-        storage::Mapping,
-    };
+    use crate::checkpoint::CheckpointData;
+    use ink::prelude::{string::String, vec, vec::Vec};
     use psp34::{
         types::Id, PSP34Data, PSP34Enumerable, PSP34Error, PSP34Event, PSP34Metadata,
         PSP34Mintable, PSP34,
@@ -18,18 +17,7 @@ mod aaw {
     pub struct Aaw {
         psp34: PSP34Data,
         owner: AccountId,
-        checkpoints: Mapping<(AccountId, u128), Checkpoint>,
-        num_checkpoints: Mapping<AccountId, u128>,
-    }
-
-    #[derive(Debug, Clone, scale::Encode, scale::Decode)]
-    #[cfg_attr(
-        feature = "std",
-        derive(scale_info::TypeInfo, ink::storage::traits::StorageLayout)
-    )]
-    pub struct Checkpoint {
-        from_block: BlockNumber,
-        votes: u32,
+        checkpoints: CheckpointData,
     }
 
     impl Aaw {
@@ -38,55 +26,23 @@ mod aaw {
             Self {
                 psp34: PSP34Data::new(),
                 owner: Self::env().caller(),
-                checkpoints: Mapping::new(),
-                num_checkpoints: Mapping::new(),
+                checkpoints: CheckpointData::new(),
             }
         }
 
         #[ink(message)]
         pub fn get_current_votes(&self, account_id: AccountId) -> u32 {
-            let num_checkpoints = self.num_checkpoints.get(account_id).unwrap_or(0);
-            if num_checkpoints == 0 {
-                return 0;
-            }
-
-            let last_checkpoint_idx = num_checkpoints - 1;
             self.checkpoints
-                .get((account_id, last_checkpoint_idx))
+                .get_last_checkpoint(account_id)
                 .map_or(0, |c| c.votes)
         }
 
         #[ink(message)]
         pub fn get_votes_at_block(&self, account_id: AccountId, block: BlockNumber) -> u32 {
             let current_block = self.env().block_number();
-            if block > current_block {
-                return 0;
-            }
-
-            let num_checkpoints = self.num_checkpoints.get(account_id).unwrap_or(0);
-            if num_checkpoints == 0 {
-                return 0;
-            }
-
-            let mut lower = 0;
-            let mut upper = num_checkpoints - 1;
-
-            while upper > lower {
-                let center = upper - (upper - lower) / 2;
-                // TODO handle error
-                let cp = self.checkpoints.get((account_id, center)).unwrap();
-
-                if cp.from_block == block {
-                    return cp.votes;
-                } else if cp.from_block < block {
-                    lower = center;
-                } else {
-                    upper = center - 1;
-                }
-            }
-
-            // TODO handle error
-            return self.checkpoints.get((account_id, lower)).unwrap().votes;
+            self.checkpoints
+                .get_checkpoint_at_block(account_id, block, current_block)
+                .map_or(0, |c| c.votes)
         }
 
         fn emit_events(&self, events: Vec<PSP34Event>) {
@@ -175,7 +131,14 @@ mod aaw {
 
         #[ink(message)]
         fn transfer(&mut self, to: AccountId, id: Id, data: Vec<u8>) -> Result<(), PSP34Error> {
-            let events = self.psp34.transfer(self.env().caller(), to, id, data)?;
+            let from = self.env().caller();
+            let current_block = self.env().block_number();
+            let events = self.psp34.transfer(from, to, id, data)?;
+
+            self.checkpoints
+                .add_new_checkpoint_to_account(from, false, current_block);
+            self.checkpoints
+                .add_new_checkpoint_to_account(to, true, current_block);
             self.emit_events(events);
             Ok(())
         }
@@ -188,7 +151,12 @@ mod aaw {
             id: Id,
             data: Vec<u8>,
         ) -> Result<(), PSP34Error> {
+            let current_block = self.env().block_number();
             let events = self.psp34.transfer_from(from, to, id, data)?;
+            self.checkpoints
+                .add_new_checkpoint_to_account(from, false, current_block);
+            self.checkpoints
+                .add_new_checkpoint_to_account(to, true, current_block);
             self.emit_events(events);
             Ok(())
         }
@@ -211,7 +179,7 @@ mod aaw {
             account: AccountId,
             attributes: Vec<(Vec<u8>, Vec<u8>)>,
         ) -> Result<(), PSP34Error> {
-            let block = self.env().block_number();
+            let current_block = self.env().block_number();
 
             if self.env().caller() != self.owner {
                 return Err(PSP34Error::Custom(String::from(
@@ -220,41 +188,8 @@ mod aaw {
             }
 
             let events = self.psp34.mint_with_attributes(account, attributes)?;
-
-            let num_of_checkpoints = self.num_checkpoints.get(account).unwrap_or(0);
-            if num_of_checkpoints == 0 {
-                self.checkpoints.insert(
-                    (account, 0),
-                    &Checkpoint {
-                        from_block: block,
-                        votes: 1,
-                    },
-                );
-
-                self.num_checkpoints.insert(account, &1);
-            } else {
-                let last_checkpoint_idx = num_of_checkpoints - 1;
-
-                // TODO handle error
-                let last_checkpoint = self
-                    .checkpoints
-                    .get((account, last_checkpoint_idx))
-                    .unwrap();
-
-                let next_cp_votes = last_checkpoint.votes + 1;
-
-                self.checkpoints.insert(
-                    (account, num_of_checkpoints),
-                    &Checkpoint {
-                        from_block: block,
-                        votes: next_cp_votes,
-                    },
-                );
-
-                self.num_checkpoints
-                    .insert(account, &(num_of_checkpoints + 1));
-            }
-
+            self.checkpoints
+                .add_new_checkpoint_to_account(account, true, current_block);
             self.emit_events(events);
             Ok(())
         }
